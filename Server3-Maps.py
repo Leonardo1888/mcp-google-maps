@@ -8,14 +8,14 @@ Tools:
     render_jobs_map  — generates an HTML map with numbered markers + legend table
 """
 
-import os, json, logging
-from mcp.server.fastmcp import FastMCP
+import os, logging
+from fastmcp import FastMCP
 from pathlib import Path
 from typing import List
 from dotenv import load_dotenv
 
-#  Absolute paths
-ROOT = Path(__file__).parent.parent
+#  Absolute paths — file and .env are in the same directory
+ROOT = Path(__file__).parent
 load_dotenv(ROOT / ".env")
 
 LOG_DIR = ROOT / "logs"
@@ -50,7 +50,7 @@ def _build_map_url(jobs: List[dict]) -> str:
         location = job.get("location", "").strip()
         if not location:
             continue
-        label = _marker_label(i)
+        label   = _marker_label(i)
         encoded = _encode_location(location)
         markers_parts.append(f"markers=color:red%7Clabel:{label}%7C{encoded}")
 
@@ -92,7 +92,7 @@ def _build_legend_rows(jobs: List[dict]) -> str:
 @mcp3.tool()
 def render_jobs_map(jobs: List[dict]) -> str:
     """
-    Render job offer locations on an interactive Google Maps image with numbered markers.
+    Render job offer locations on a Google Maps image with numbered markers.
 
     Call this AFTER search_jobs_by_skills or search_jobs_by_title returns results.
     Pass the jobOffers list directly from the job search response.
@@ -113,7 +113,7 @@ def render_jobs_map(jobs: List[dict]) -> str:
     Returns:
         HTML string with:
           - Google Maps Static image with numbered red markers (one per job)
-          - Legend table: marker number → job title (linked), company, location
+          - Legend table: marker number -> job title (linked), company, location
         On error: plain HTML error message.
     """
     if not GOOGLE_MAPS_API_KEY:
@@ -124,7 +124,6 @@ def render_jobs_map(jobs: List[dict]) -> str:
         logging.warning("render_jobs_map: called with empty jobs list")
         return "<p>No jobs provided to render on the map.</p>"
 
-    # Filter out jobs with no location
     valid_jobs = [j for j in jobs if j.get("location", "").strip()]
     if not valid_jobs:
         return "<p>No valid locations found in the job list.</p>"
@@ -137,14 +136,12 @@ def render_jobs_map(jobs: List[dict]) -> str:
     html = f"""
 <div style="font-family:Arial,sans-serif;max-width:740px;margin:0 auto;">
   <h3 style="margin-bottom:12px;">🗺️ Job Locations — {len(valid_jobs)} offer(s) found</h3>
-
   <img
     src="{map_url}"
     alt="Job locations map"
     width="100%"
     style="border-radius:10px;box-shadow:0 2px 10px rgba(0,0,0,0.18);display:block;"
   />
-
   <table style="width:100%;border-collapse:collapse;margin-top:14px;font-size:14px;">
     <thead>
       <tr style="background:#f5f5f5;text-align:left;">
@@ -160,16 +157,11 @@ def render_jobs_map(jobs: List[dict]) -> str:
   </table>
 </div>
 """
-
     logging.info("render_jobs_map: HTML generated successfully")
     return html
 
 
-#  Entrypoint
+# Entrypoint 
 
 if __name__ == "__main__":
-    mcp3.run(
-        transport="streamable-http",
-        host="0.0.0.0",
-        port=int(os.getenv("PORT", 8000)),
-    )
+    mcp3.run(transport="http", host="0.0.0.0", port=int(os.getenv("PORT", 8000)))
