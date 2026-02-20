@@ -5,10 +5,10 @@ Deployed remotely (e.g. Render.com) and connected via streamable-http.
 Docs: https://developers.google.com/maps/documentation/maps-static/overview
 
 Tools:
-    render_jobs_map  — generates a Markdown map image with numbered markers + legend
+    render_jobs_map  — returns map URL + structured job list for the LLM to display
 """
 
-import os, logging
+import os, json, logging
 from fastmcp import FastMCP
 from pathlib import Path
 from typing import List
@@ -69,57 +69,66 @@ def _build_map_url(jobs: List[dict]) -> str:
 @mcp3.tool()
 def render_jobs_map(jobs: List[dict]) -> str:
     """
-    Render job offer locations on a Google Maps image with numbered markers.
+    Generate a Google Maps image URL and structured job list to display after a job search.
 
     Call this AFTER search_jobs_by_skills or search_jobs_by_title returns results.
     Pass the jobOffers list directly from the job search response.
-    Returns a Markdown string — output it exactly as-is without any modification.
+
+    IMPORTANT — after calling this tool, YOU must format the response like this:
+    1. Show the map image using Markdown: ![Job Map](<map_url>)
+    2. Show a numbered Markdown table with columns: #, Job Title, Company, Location
+       - Use the "number" field as the row label (matches the marker on the map)
+       - If a job has a "url", make the title a clickable Markdown link: [Title](url)
+    Do not skip the image. Do not skip the table. Do not add extra commentary.
 
     Args:
-        jobs: List of job offer dicts. Each must contain:
+        jobs: List of job offer dicts from search_jobs_by_skills or search_jobs_by_title.
+              Each dict must have:
               - "title"    (str): job title
               - "company"  (str): company name
               - "location" (str): city/region, e.g. "Milano, Italy"
               - "url"      (str, optional): link to the job offer
 
     Returns:
-        Markdown string with a map image and a legend list.
-        Output this EXACTLY as returned — do not reformat or summarize it.
+        JSON with:
+          - map_url (str): Google Maps Static image URL — embed as ![Job Map](<map_url>)
+          - total   (int): number of jobs on the map
+          - jobs    (list): [{number, title, company, location, url}]
+        On error: JSON with {status: "error", error: "<message>"}
     """
     if not GOOGLE_MAPS_API_KEY:
         logging.error("render_jobs_map: GOOGLE_MAPS_API_KEY not set")
-        return "Error: GOOGLE_MAPS_API_KEY not configured on the server."
+        return json.dumps({"status": "error", "error": "GOOGLE_MAPS_API_KEY not configured on the server."})
 
     if not jobs:
         logging.warning("render_jobs_map: called with empty jobs list")
-        return "No jobs provided to render on the map."
+        return json.dumps({"status": "error", "error": "No jobs provided."})
 
     valid_jobs = [j for j in jobs if j.get("location", "").strip()]
     if not valid_jobs:
-        return "No valid locations found in the job list."
+        return json.dumps({"status": "error", "error": "No valid locations found in the job list."})
 
     logging.info(f"render_jobs_map: rendering {len(valid_jobs)} job(s)")
 
     map_url = _build_map_url(valid_jobs)
 
-    # Build legend as markdown list
-    legend_lines = []
-    for i, job in enumerate(valid_jobs, 1):
-        label    = _marker_label(i)
-        title    = job.get("title", "N/A")
-        company  = job.get("company", "N/A")
-        location = job.get("location", "N/A")
-        url      = job.get("url", "")
+    structured_jobs = [
+        {
+            "number":   _marker_label(i + 1),
+            "title":    j.get("title",    "N/A"),
+            "company":  j.get("company",  "N/A"),
+            "location": j.get("location", "N/A"),
+            "url":      j.get("url", ""),
+        }
+        for i, j in enumerate(valid_jobs)
+    ]
 
-        title_part = f"[{title}]({url})" if url else title
-        legend_lines.append(f"**#{label}** {title_part} — {company} — {location}")
-
-    legend = "\n".join(legend_lines)
-
-    result = f"### 🗺️ Job Locations — {len(valid_jobs)} offer(s) found\n\n![Job Map]({map_url})\n\n{legend}"
-
-    logging.info("render_jobs_map: markdown generated successfully")
-    return result
+    logging.info("render_jobs_map: JSON response generated successfully")
+    return json.dumps({
+        "map_url": map_url,
+        "total":   len(valid_jobs),
+        "jobs":    structured_jobs,
+    }, ensure_ascii=False)
 
 
 #  Entrypoint
