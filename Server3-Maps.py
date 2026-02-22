@@ -134,15 +134,14 @@ def render_jobs_map(jobs: List[dict]) -> str:
 @mcp3.tool()
 def render_jobs_map_by_coordinates(jobs: List[dict]) -> str:
     """
-    Generate a Google Maps image URL using exact latitude/longitude coordinates.
+    Generate a Google Maps image URL using coordinates when available, city name as fallback.
 
-    Use this instead of render_jobs_map when the job list contains valid
-    "latitude" and "longitude" float fields (as returned by search_jobs_by_skills).
-    This is more precise than using city names, and works even for jobs where
-    the location string is generic (e.g. "Italia").
+    For each job:
+    - If "latitude" and "longitude" are valid floats → uses exact coordinates (precise)
+    - If coordinates are missing or invalid → falls back to the "location" city string
 
-    Jobs without valid coordinates (None, {}, or missing) are automatically
-    skipped and excluded from the map.
+    Call this AFTER search_jobs_by_skills returns results.
+    Pass the full jobOffers list directly — no need to filter beforehand.
 
     IMPORTANT — after calling this tool, YOU must format the response like this:
     1. Show the map image using Markdown: ![Job Map](<map_url>)
@@ -154,19 +153,21 @@ def render_jobs_map_by_coordinates(jobs: List[dict]) -> str:
     Args:
         jobs: List of job offer dicts from search_jobs_by_skills.
               Each dict should have:
-              - "title"     (str): job title
-              - "company"   (str): company name
-              - "location"  (str): display location string
-              - "latitude"  (float): e.g. 45.471322
-              - "longitude" (float): e.g. 9.187087
-              - "url"       (str, optional): link to the job offer
+              - "title"     (str)  : job title
+              - "company"   (str)  : company name
+              - "location"  (str)  : city/region fallback string
+              - "latitude"  (float): precise latitude  (optional)
+              - "longitude" (float): precise longitude (optional)
+              - "url"       (str)  : link to the job offer (optional)
 
     Returns:
         JSON with:
-          - map_url     (str):  Google Maps Static image URL
-          - total       (int):  number of jobs placed on the map
-          - skipped     (int):  number of jobs excluded (no valid coordinates)
-          - jobs        (list): [{number, title, company, location, url}]
+          - map_url          (str):  Google Maps Static image URL
+          - total            (int):  total jobs on the map
+          - by_coordinates   (int):  jobs placed using exact coordinates
+          - by_location      (int):  jobs placed using city name fallback
+          - skipped          (int):  jobs excluded (no coordinates AND no location)
+          - jobs             (list): [{number, title, company, location, url}]
         On error: JSON with {status: "error", error: "<message>"}
     """
     if not GOOGLE_MAPS_API_KEY:
@@ -177,41 +178,43 @@ def render_jobs_map_by_coordinates(jobs: List[dict]) -> str:
         logging.warning("render_jobs_map_by_coordinates: called with empty jobs list")
         return json.dumps({"status": "error", "error": "No jobs provided."})
 
-    # Filter only jobs with valid numeric coordinates
+    markers_parts = []
     valid_jobs = []
+    by_coordinates = 0
+    by_location = 0
     skipped = 0
-    for j in jobs:
-        lat = j.get("latitude")
-        lng = j.get("longitude")
+
+    for i, job in enumerate(jobs, 1):
+        label = _marker_label(i)
+        lat = job.get("latitude")
+        lng = job.get("longitude")
+        location = job.get("location", "").strip()
+
         if isinstance(lat, (int, float)) and isinstance(lng, (int, float)):
-            valid_jobs.append(j)
+            # Precise coordinates available
+            markers_parts.append(f"markers=color:red%7Clabel:{label}%7C{lat},{lng}")
+            by_coordinates += 1
+            valid_jobs.append(job)
+            logging.info(f"render_jobs_map_by_coordinates: '{job.get('title')}' → coords ({lat},{lng})")
+        elif location:
+            # Fallback to city name
+            encoded = _encode_location(location)
+            markers_parts.append(f"markers=color:red%7Clabel:{label}%7C{encoded}")
+            by_location += 1
+            valid_jobs.append(job)
+            logging.info(f"render_jobs_map_by_coordinates: '{job.get('title')}' → city fallback '{location}'")
         else:
             skipped += 1
-            logging.info(f"render_jobs_map_by_coordinates: skipping '{j.get('title')}' — no valid coordinates")
+            logging.info(f"render_jobs_map_by_coordinates: skipping '{job.get('title')}' — no coords or location")
 
     if not valid_jobs:
-        return json.dumps({
-            "status":  "error",
-            "error":   "No jobs with valid coordinates found. Try render_jobs_map (city-name based) instead.",
-            "skipped": skipped,
-        })
+        return json.dumps({"status": "error", "skipped": skipped, "error": "No jobs could be placed on the map."})
 
-    logging.info(f"render_jobs_map_by_coordinates: rendering {len(valid_jobs)} job(s), skipped {skipped}")
-
-    # Build markers using lat/lng
-    markers_parts = []
-    for i, job in enumerate(valid_jobs, 1):
-        label = _marker_label(i)
-        lat   = job["latitude"]
-        lng   = job["longitude"]
-        markers_parts.append(f"markers=color:red%7Clabel:{label}%7C{lat},{lng}")
-
-    markers_str = "&".join(markers_parts)
     map_url = (
         f"https://maps.googleapis.com/maps/api/staticmap"
         f"?size=700x420"
         f"&maptype=roadmap"
-        f"&{markers_str}"
+        f"&{'&'.join(markers_parts)}"
         f"&key={GOOGLE_MAPS_API_KEY}"
     )
 
@@ -226,22 +229,15 @@ def render_jobs_map_by_coordinates(jobs: List[dict]) -> str:
         for i, j in enumerate(valid_jobs)
     ]
 
-    logging.info("render_jobs_map_by_coordinates: JSON response generated successfully")
+    logging.info(f"render_jobs_map_by_coordinates: done — {by_coordinates} coords, {by_location} city, {skipped} skipped")
     return json.dumps({
-        "map_url": map_url,
-        "total":   len(valid_jobs),
-        "skipped": skipped,
-        "jobs":    structured_jobs,
+        "map_url":        map_url,
+        "total":          len(valid_jobs),
+        "by_coordinates": by_coordinates,
+        "by_location":    by_location,
+        "skipped":        skipped,
+        "jobs":           structured_jobs,
     }, ensure_ascii=False)
-
-
-#  Health endpoint (keep-alive for Render.com free tier)
-#  Ping this URL every 5 minutes with UptimeRobot to prevent cold starts.
-
-@mcp3.custom_route("/health", methods=["GET"])
-async def health(request):
-    from starlette.responses import JSONResponse
-    return JSONResponse({"status": "ok"})
 
 
 #  Entrypoint
