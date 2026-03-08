@@ -36,8 +36,13 @@ mcp3 = FastMCP("job-map-renderer")
 #  Helpers
 
 def _marker_label(index: int) -> str:
-    """Returns a single-character label for a map marker (1-9, then A, B, C...)."""
-    return str(index) if index <= 9 else chr(64 + index)
+    """
+    Returns a single-character label for a Google Maps Static API marker.
+    The API only supports 1 character. For index > 9 we use the last digit
+    (10->0, 11->1, ...) to avoid letters like "J" appearing on the map.
+    The numbered table shown to the user always uses the full integer index.
+    """
+    return str(index % 10)
 
 def _encode_location(location: str) -> str:
     """URL-encodes a location string for use in a Google Maps Static API URL."""
@@ -196,8 +201,9 @@ def render_jobs_map_by_coordinates(jobs: List[dict]) -> str:
             by_coordinates += 1
             valid_jobs.append(job)
             logging.info(f"render_jobs_map_by_coordinates: '{job.get('title')}' → coords ({lat},{lng})")
-        elif location:
-            # Fallback to city name
+        elif location and location.strip().lower() not in ("italia", "italy"):
+            # Fallback to city name — skip generic "Italia" since it places a marker
+            # in the middle of the sea and pollutes the map
             encoded = _encode_location(location)
             markers_parts.append(f"markers=color:red%7Clabel:{label}%7C{encoded}")
             by_location += 1
