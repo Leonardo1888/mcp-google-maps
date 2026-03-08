@@ -38,11 +38,13 @@ mcp3 = FastMCP("job-map-renderer")
 def _marker_label(index: int) -> str:
     """
     Returns a single-character label for a Google Maps Static API marker.
-    The API only supports 1 character. For index > 9 we use the last digit
-    (10->0, 11->1, ...) to avoid letters like "J" appearing on the map.
-    The numbered table shown to the user always uses the full integer index.
+    1-9  → "1"-"9"
+    10   → "A", 11 → "B", 12 → "C" ... (chr(55+index): 10→A, 11→B ...)
+    Avoids ambiguous "0" and stray letters like "J" for index=10.
     """
-    return str(index % 10)
+    if index <= 9:
+        return str(index)
+    return chr(55 + index)  # 10→A, 11→B, 12→C ...
 
 def _encode_location(location: str) -> str:
     """URL-encodes a location string for use in a Google Maps Static API URL."""
@@ -194,20 +196,20 @@ def render_jobs_map_by_coordinates(jobs: List[dict]) -> str:
         lat = job.get("latitude")
         lng = job.get("longitude")
         location = job.get("location", "").strip()
+        location_lower = location.lower()
 
         if isinstance(lat, (int, float)) and isinstance(lng, (int, float)):
             # Precise coordinates available
             markers_parts.append(f"markers=color:red%7Clabel:{label}%7C{lat},{lng}")
             by_coordinates += 1
-            valid_jobs.append(job)
+            valid_jobs.append((i, job))  # store original index
             logging.info(f"render_jobs_map_by_coordinates: '{job.get('title')}' → coords ({lat},{lng})")
-        elif location and location.strip().lower() not in ("italia", "italy"):
-            # Fallback to city name — skip generic "Italia" since it places a marker
-            # in the middle of the sea and pollutes the map
+        elif location and location_lower not in ("italia", "italy"):
+            # Fallback to city name — skip generic "Italia", it places markers in the sea
             encoded = _encode_location(location)
             markers_parts.append(f"markers=color:red%7Clabel:{label}%7C{encoded}")
             by_location += 1
-            valid_jobs.append(job)
+            valid_jobs.append((i, job))  # store original index
             logging.info(f"render_jobs_map_by_coordinates: '{job.get('title')}' → city fallback '{location}'")
         else:
             skipped += 1
@@ -226,19 +228,19 @@ def render_jobs_map_by_coordinates(jobs: List[dict]) -> str:
 
     structured_jobs = [
         {
-            "number":   _marker_label(i + 1),
+            "number":   _marker_label(orig_i),  # matches the marker on the map
             "title":    j.get("title",    "N/A"),
             "company":  j.get("company",  "N/A"),
             "location": j.get("location", "N/A"),
             "url":      j.get("url", ""),
         }
-        for i, j in enumerate(valid_jobs)
+        for orig_i, j in valid_jobs
     ]
 
     logging.info(f"render_jobs_map_by_coordinates: done — {by_coordinates} coords, {by_location} city, {skipped} skipped")
     return json.dumps({
         "map_url":        map_url,
-        "total":          len(valid_jobs),
+        "total":          len(structured_jobs),
         "by_coordinates": by_coordinates,
         "by_location":    by_location,
         "skipped":        skipped,
