@@ -38,13 +38,12 @@ mcp3 = FastMCP("job-map-renderer")
 def _marker_label(index: int) -> str:
     """
     Returns a single-character label for a Google Maps Static API marker.
-    1-9  → "1"-"9"
-    10   → "A", 11 → "B", 12 → "C" ... (chr(55+index): 10→A, 11→B ...)
-    Avoids ambiguous "0" and stray letters like "J" for index=10.
+    1-9 -> "1".."9", 10 -> "A", 11 -> "B" ... (Google Maps allows 1 char only)
+    map_jobs in the response always uses the same label as the map marker.
     """
     if index <= 9:
         return str(index)
-    return chr(55 + index)  # 10→A, 11→B, 12→C ...
+    return chr(55 + index)  # 10->A, 11->B, 12->C ...
 
 def _encode_location(location: str) -> str:
     """URL-encodes a location string for use in a Google Maps Static API URL."""
@@ -185,37 +184,38 @@ def render_jobs_map_by_coordinates(jobs: List[dict]) -> str:
         logging.warning("render_jobs_map_by_coordinates: called with empty jobs list")
         return json.dumps({"status": "error", "error": "No jobs provided."})
 
-    markers_parts = []
-    valid_jobs = []
+    markers_parts  = []
+    mapped_jobs    = []   # (map_number, job) -- jobs that got a marker
+    skipped_jobs   = []   # jobs excluded (no valid specific location)
     by_coordinates = 0
-    by_location = 0
-    skipped = 0
+    by_location    = 0
+    skipped        = 0
+    map_counter    = 0    # increments ONLY for jobs placed on the map
 
-    for i, job in enumerate(jobs, 1):
-        label = _marker_label(i)
+    for job in jobs:
         lat = job.get("latitude")
         lng = job.get("longitude")
         location = job.get("location", "").strip()
         location_lower = location.lower()
 
         if isinstance(lat, (int, float)) and isinstance(lng, (int, float)):
-            # Precise coordinates available
+            map_counter += 1
+            label = _marker_label(map_counter)
             markers_parts.append(f"markers=color:red%7Clabel:{label}%7C{lat},{lng}")
             by_coordinates += 1
-            valid_jobs.append((i, job))  # store original index
-            logging.info(f"render_jobs_map_by_coordinates: '{job.get('title')}' → coords ({lat},{lng})")
+            mapped_jobs.append((map_counter, job))
         elif location and location_lower not in ("italia", "italy"):
-            # Fallback to city name — skip generic "Italia", it places markers in the sea
+            map_counter += 1
+            label = _marker_label(map_counter)
             encoded = _encode_location(location)
             markers_parts.append(f"markers=color:red%7Clabel:{label}%7C{encoded}")
             by_location += 1
-            valid_jobs.append((i, job))  # store original index
-            logging.info(f"render_jobs_map_by_coordinates: '{job.get('title')}' → city fallback '{location}'")
+            mapped_jobs.append((map_counter, job))
         else:
             skipped += 1
-            logging.info(f"render_jobs_map_by_coordinates: skipping '{job.get('title')}' — no coords or location")
+            skipped_jobs.append(job)
 
-    if not valid_jobs:
+    if not mapped_jobs:
         return json.dumps({"status": "error", "skipped": skipped, "error": "No jobs could be placed on the map."})
 
     map_url = (
@@ -226,25 +226,41 @@ def render_jobs_map_by_coordinates(jobs: List[dict]) -> str:
         f"&key={GOOGLE_MAPS_API_KEY}"
     )
 
-    structured_jobs = [
+    jobs_on_map = [
         {
-            "number":   _marker_label(orig_i),  # matches the marker on the map
+            "number":   _marker_label(num),
             "title":    j.get("title",    "N/A"),
             "company":  j.get("company",  "N/A"),
             "location": j.get("location", "N/A"),
             "url":      j.get("url", ""),
+            "on_map":   True,
         }
-        for orig_i, j in valid_jobs
+        for num, j in mapped_jobs
     ]
 
-    logging.info(f"render_jobs_map_by_coordinates: done — {by_coordinates} coords, {by_location} city, {skipped} skipped")
+    jobs_not_on_map = [
+        {
+            "number":   "-",
+            "title":    j.get("title",    "N/A"),
+            "company":  j.get("company",  "N/A"),
+            "location": j.get("location", "N/A"),
+            "url":      j.get("url", ""),
+            "on_map":   False,
+        }
+        for j in skipped_jobs
+    ]
+
+    all_jobs = jobs_on_map + jobs_not_on_map
+
+    logging.info(f"render_jobs_map_by_coordinates: {len(mapped_jobs)} on map ({by_coordinates} coords, {by_location} city), {skipped} skipped")
     return json.dumps({
         "map_url":        map_url,
-        "total":          len(structured_jobs),
+        "total":          len(all_jobs),
+        "on_map":         len(mapped_jobs),
         "by_coordinates": by_coordinates,
         "by_location":    by_location,
         "skipped":        skipped,
-        "jobs":           structured_jobs,
+        "jobs":           all_jobs,
     }, ensure_ascii=False)
 
 
